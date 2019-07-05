@@ -4,9 +4,6 @@
 
 package tar
 
-// TODO(dsymonds):
-// - catch more errors (no first header, etc.)
-
 import (
 	"fmt"
 	"io"
@@ -16,6 +13,9 @@ import (
 	"time"
 )
 
+// Writer provides sequential writing of a tar archive.
+// Write.WriteHeader begins a new file with the provided Header,
+// and then Writer can be treated as an io.Writer to supply that file's data.
 type Writer struct {
 	w    io.Writer
 	pad  int64      // Amount of padding to write after current file entry
@@ -34,10 +34,10 @@ func NewWriter(w io.Writer) *Writer {
 	return &Writer{w: w, curr: &regFileWriter{w, 0}}
 }
 
-
 type fileWriter interface {
 	io.Writer
 	fileState
+
 	ReadFrom(io.Reader) (int64, error)
 }
 
@@ -46,12 +46,10 @@ type fileWriter interface {
 //
 // This is unnecessary as the next call to WriteHeader or Close
 // will implicitly flush out the file's padding.
-
 func (tw *Writer) Flush() error {
 	if tw.err != nil {
 		return tw.err
 	}
-
 	if nb := tw.curr.LogicalRemaining(); nb > 0 {
 		return fmt.Errorf("archive/tar: missed writing %d bytes", nb)
 	}
@@ -140,6 +138,7 @@ func (tw *Writer) writePAXHeader(hdr *Header, paxHdrs map[string]string) error {
 			sph := append([]sparseEntry{}, hdr.SparseHoles...) // Copy sparse map
 			sph = alignSparseEntries(sph, hdr.Size)
 			spd = invertSparseEntries(sph, hdr.Size)
+
 			// Format the sparse map.
 			hdr.Size = 0 // Replace with encoded size
 			spb = append(strconv.AppendInt(spb, int64(len(spd)), 10), '\n')
@@ -151,6 +150,7 @@ func (tw *Writer) writePAXHeader(hdr *Header, paxHdrs map[string]string) error {
 			pad := blockPadding(int64(len(spb)))
 			spb = append(spb, zeroBlock[:pad]...)
 			hdr.Size += int64(len(spb)) // Accounts for encoded sparse map
+
 			// Add and modify appropriate PAX records.
 			dir, file := path.Split(realName)
 			hdr.Name = path.Join(dir, "GNUSparseFile.0", file)
@@ -204,6 +204,15 @@ func (tw *Writer) writePAXHeader(hdr *Header, paxHdrs map[string]string) error {
 		}
 	}
 
+	// Pack the main header.
+	var f formatter // Ignore errors since they are expected
+	fmtStr := func(b []byte, s string) { f.formatString(b, toASCII(s)) }
+	blk := tw.templateV7Plus(hdr, fmtStr, f.formatOctal)
+	blk.SetFormat(FormatPAX)
+	if err := tw.writeRawHeader(blk, hdr.Size, hdr.Typeflag); err != nil {
+		return err
+	}
+
 	// TODO(dsnet): Re-enable this when adding sparse support.
 	// See https://golang.org/issue/22735
 	/*
@@ -253,6 +262,7 @@ func (tw *Writer) writeGNUHeader(hdr *Header) error {
 			sph := append([]sparseEntry{}, hdr.SparseHoles...) // Copy sparse map
 			sph = alignSparseEntries(sph, hdr.Size)
 			spd = invertSparseEntries(sph, hdr.Size)
+
 			// Format the sparse map.
 			formatSPD := func(sp sparseDatas, sa sparseArray) sparseDatas {
 				for i := 0; len(sp) > 0 && i < sa.MaxEntries(); i++ {
@@ -271,6 +281,7 @@ func (tw *Writer) writeGNUHeader(hdr *Header) error {
 				sp2 = formatSPD(sp2, spHdr.Sparse())
 				spb = append(spb, spHdr[:]...)
 			}
+
 			// Update size fields in the header block.
 			realSize := hdr.Size
 			hdr.Size = 0 // Encoded size; does not account for encoded sparse map
@@ -359,9 +370,8 @@ func (tw *Writer) writeRawFile(name, data string, flag byte, format Format) erro
 	f.formatOctal(v7.Size(), int64(len(data))) // Must be < 8GiB
 	f.formatOctal(v7.ModTime(), 0)
 	tw.blk.SetFormat(format)
-
 	if f.err != nil {
-		return f.err
+		return f.err // Only occurs if size condition is violated
 	}
 
 	// Write the header and data.
@@ -371,6 +381,7 @@ func (tw *Writer) writeRawFile(name, data string, flag byte, format Format) erro
 	_, err := io.WriteString(tw, data)
 	return err
 }
+
 // writeRawHeader writes the value of blk, regardless of its value.
 // It sets up the Writer such that it can accept a file of the given size.
 // If the flag is a special header-only flag, then the size is treated as zero.
@@ -395,8 +406,8 @@ func splitUSTARPath(name string) (prefix, suffix string, ok bool) {
 	length := len(name)
 	if length <= nameSize || !isASCII(name) {
 		return "", "", false
-		} else if length > prefixSize+1 {
-			length = prefixSize + 1
+	} else if length > prefixSize+1 {
+		length = prefixSize + 1
 	} else if name[length-1] == '/' {
 		length--
 	}
@@ -465,7 +476,10 @@ func (tw *Writer) Close() error {
 	for i := 0; i < 2 && err == nil; i++ {
 		_, err = tw.w.Write(zeroBlock[:])
 	}
-	return record
+
+	// Ensure all future actions are invalid.
+	tw.err = ErrWriteAfterClose
+	return err // Report IO errors
 }
 
 // regFileWriter is a fileWriter for writing data to a regular file entry.

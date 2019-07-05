@@ -8,6 +8,10 @@ package tar
 
 import (
 	"os"
+	"os/user"
+	"runtime"
+	"strconv"
+	"sync"
 	"syscall"
 )
 
