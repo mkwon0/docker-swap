@@ -9,11 +9,8 @@ package tar
 
 import (
 	"bytes"
-	"errors"
 	"io"
 	"io/ioutil"
-	"math"
-	"os"
 	"strconv"
 	"strings"
 	"time"
