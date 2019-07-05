@@ -13,12 +13,12 @@
 package tar
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path"
 	"time"
+	"strings"
 )
 
 // BUG: Use of the Uid and Gid fields in Header could overflow on 32-bit
