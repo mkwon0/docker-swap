@@ -20,6 +20,7 @@ import (
 	"time"
 	"strings"
 	"math"
+	"strconv"
 )
 
 // BUG: Use of the Uid and Gid fields in Header could overflow on 32-bit

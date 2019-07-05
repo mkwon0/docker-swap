@@ -8,13 +8,10 @@ package tar
 // - catch more errors (no first header, etc.)
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"io"
 	"path"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 )
