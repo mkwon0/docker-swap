@@ -3,24 +3,23 @@
 // license that can be found in the LICENSE file.
 
 // Package tar implements access to tar archives.
-// It aims to cover most of the variations, including those produced
-// by GNU and BSD tars.
 //
-// References:
-//   http://www.freebsd.org/cgi/man.cgi?query=tar&sektion=5
-//   http://www.gnu.org/software/tar/manual/html_node/Standard.html
-//   http://pubs.opengroup.org/onlinepubs/9699919799/utilities/pax.html
+// Tape archives (tar) are a file format for storing a sequence of files that
+// can be read and written in a streaming manner.
+// This package aims to cover most variations of the format,
+// including those produced by GNU and BSD tar tools.
 package tar
 
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path"
-	"time"
-	"strings"
-	"math"
+	"reflect"
 	"strconv"
+	"strings"
+	"time"
 )
 
 // BUG: Use of the Uid and Gid fields in Header could overflow on 32-bit
@@ -54,7 +53,6 @@ func (he headerError) Error() string {
 }
 
 // Type flags for Header.Typeflag.
-
 const (
 	// Type '0' indicates a regular file.
 	TypeReg  = '0'
@@ -132,9 +130,13 @@ var basicKeys = map[string]bool{
 	paxUname: true, paxGname: true, paxMtime: true, paxAtime: true, paxCtime: true,
 }
 
-
 // A Header represents a single header in a tar archive.
 // Some fields may not be populated.
+//
+// For forward compatibility, users that retrieve a Header from Reader.Next,
+// mutate it in some ways, and then pass it back to Writer.WriteHeader
+// should do so by creating a new Header and copying the fields
+// that they are interested in preserving.
 type Header struct {
 	// Typeflag is the type of header entry.
 	// The zero value is automatically promoted to either TypeReg or TypeDir
@@ -523,7 +525,6 @@ func (h Header) allowedFormats() (format Format, paxHdrs map[string]string, err 
 	return format, paxHdrs, err
 }
 
-
 // FileInfo returns an os.FileInfo for the Header.
 func (h *Header) FileInfo() os.FileInfo {
 	return headerFileInfo{h}
@@ -606,6 +607,7 @@ const (
 	c_ISUID = 04000 // Set uid
 	c_ISGID = 02000 // Set gid
 	c_ISVTX = 01000 // Save text (sticky bit)
+
 	// Common Unix mode constants; these are not defined in any common tar standard.
 	// Header.FileInfo understands these, but FileInfoHeader will never produce these.
 	c_ISDIR  = 040000  // Directory
@@ -620,9 +622,10 @@ const (
 // FileInfoHeader creates a partially-populated Header from fi.
 // If fi describes a symlink, FileInfoHeader records link as the link target.
 // If fi describes a directory, a slash is appended to the name.
-// Because os.FileInfo's Name method returns only the base name of
-// the file it describes, it may be necessary to modify the Name field
-// of the returned header to provide the full path name of the file.
+//
+// Since os.FileInfo's Name method only returns the base name of
+// the file it describes, it may be necessary to modify Header.Name
+// to provide the full path name of the file.
 func FileInfoHeader(fi os.FileInfo, link string) (*Header, error) {
 	if fi == nil {
 		return nil, errors.New("archive/tar: FileInfo is nil")
@@ -693,7 +696,7 @@ func FileInfoHeader(fi os.FileInfo, link string) (*Header, error) {
 			for k, v := range sys.PAXRecords {
 				h.PAXRecords[k] = v
 			}
-		}		
+		}
 	}
 	if sysStat != nil {
 		return h, sysStat(fi, h)

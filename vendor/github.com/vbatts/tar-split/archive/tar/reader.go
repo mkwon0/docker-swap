@@ -4,9 +4,6 @@
 
 package tar
 
-// TODO(dsymonds):
-//   - pax extensions
-
 import (
 	"bytes"
 	"io"
@@ -16,6 +13,9 @@ import (
 	"time"
 )
 
+// Reader provides sequential access to the contents of a tar archive.
+// Reader.Next advances to the next file in the archive (including the first),
+// and then Reader can be treated as an io.Reader to access the file's data.
 type Reader struct {
 	r    io.Reader
 	pad  int64      // Amount of padding (ignored) after current file entry
@@ -26,6 +26,7 @@ type Reader struct {
 	// It is only the responsibility of every exported method of Reader to
 	// ensure that this error is sticky.
 	err error
+
 	RawAccounting bool          // Whether to enable the access needed to reassemble the tar from raw bytes. Some performance/memory hit for this.
 	rawBytes      *bytes.Buffer // last raw bits
 }
@@ -36,7 +37,6 @@ type fileReader interface {
 
 	WriteTo(io.Writer) (int64, error)
 }
-
 
 // RawBytes accesses the raw bytes of the archive, apart from the file payload itself.
 // This includes the header and padding.
@@ -52,13 +52,19 @@ func (tr *Reader) RawBytes() []byte {
 		tr.rawBytes = bytes.NewBuffer(nil)
 	}
 	defer tr.rawBytes.Reset() // if we've read them, then flush them.
+
 	return tr.rawBytes.Bytes()
+
 }
 
+// NewReader creates a new Reader reading from r.
 func NewReader(r io.Reader) *Reader {
 	return &Reader{r: r, curr: &regFileReader{r, 0}}
 }
+
 // Next advances to the next entry in the tar archive.
+// The Header.Size determines how many bytes can be read for the next file.
+// Any remaining data in the current file is automatically discarded.
 //
 // io.EOF is returned at the end of the input.
 func (tr *Reader) Next() (*Header, error) {
@@ -87,7 +93,6 @@ func (tr *Reader) next() (*Header, error) {
 	// data that describes the next file. These meta data "files" should not
 	// normally be visible to the outside. As such, this loop iterates through
 	// one or more "header files" until it finds a "normal file".
-
 	format := FormatUSTAR | FormatPAX | FormatGNU
 	for {
 		// Discard the remainder of the file and any padding.
@@ -131,7 +136,6 @@ func (tr *Reader) next() (*Header, error) {
 				}, nil
 			}
 			continue // This is a meta header affecting the next header
-
 		case TypeGNULongName, TypeGNULongLink:
 			format.mayOnlyBe(FormatGNU)
 			realname, err := ioutil.ReadAll(tr)
@@ -150,8 +154,11 @@ func (tr *Reader) next() (*Header, error) {
 			case TypeGNULongLink:
 				gnuLongLink = p.parseString(realname)
 			}
-			continue
+			continue // This is a meta header affecting the next header
 		default:
+			// The old GNU sparse format is handled here since it is technically
+			// just a regular file with additional attributes.
+
 			if err := mergePAX(hdr, paxHdrs); err != nil {
 				return nil, err
 			}
@@ -165,7 +172,7 @@ func (tr *Reader) next() (*Header, error) {
 				if strings.HasSuffix(hdr.Name, "/") {
 					hdr.Typeflag = TypeDir // Legacy archives use trailing slash for directories
 				} else {
-					hdr.Typeflag = TypeReg			
+					hdr.Typeflag = TypeReg
 				}
 			}
 
@@ -186,7 +193,7 @@ func (tr *Reader) next() (*Header, error) {
 				format.mayOnlyBe(FormatUSTAR)
 			}
 			hdr.Format = format
-			return hdr, nil // This is a file, so stop			
+			return hdr, nil // This is a file, so stop
 		}
 	}
 }
@@ -199,7 +206,6 @@ func (tr *Reader) handleRegularFile(hdr *Header) error {
 	if isHeaderOnlyType(hdr.Typeflag) {
 		nb = 0
 	}
-
 	if nb < 0 {
 		return ErrHeader
 	}
@@ -315,7 +321,6 @@ func mergePAX(hdr *Header, paxHdrs map[string]string) (err error) {
 				hdr.Xattrs[k[len(paxSchilyXattr):]] = v
 			}
 		}
-
 		if err != nil {
 			return ErrHeader
 		}
@@ -339,6 +344,7 @@ func parsePAX(r io.Reader) (map[string]string, error) {
 	}
 	sbuf := string(buf)
 
+	// For GNU PAX sparse format 0.0 support.
 	// This function transforms the sparse format 0.0 headers into format 0.1
 	// headers since 0.0 headers were not PAX compliant.
 	var sparseMap []string
@@ -364,7 +370,6 @@ func parsePAX(r io.Reader) (map[string]string, error) {
 			paxHdrs[key] = value
 		}
 	}
-
 	if len(sparseMap) > 0 {
 		paxHdrs[paxGNUSparseMap] = strings.Join(sparseMap, ",")
 	}
@@ -372,7 +377,8 @@ func parsePAX(r io.Reader) (map[string]string, error) {
 }
 
 // readHeader reads the next block header and assumes that the underlying reader
-// is already aligned to a block boundary.
+// is already aligned to a block boundary. It returns the raw block of the
+// header in case further processing is required.
 //
 // The err will be set to io.EOF only when one of the following occurs:
 //	* Exactly 0 bytes are read and EOF is hit.
@@ -410,6 +416,7 @@ func (tr *Reader) readHeader() (*Header, *block, error) {
 
 	var p parser
 	hdr := new(Header)
+
 	// Unpack the V7 header.
 	v7 := tr.blk.V7()
 	hdr.Typeflag = v7.TypeFlag()[0]
@@ -498,7 +505,8 @@ func (tr *Reader) readHeader() (*Header, *block, error) {
 		}
 	}
 	return hdr, &tr.blk, p.err
-}	
+}
+
 // readOldGNUSparseMap reads the sparse map from the old GNU sparse format.
 // The sparse map is stored in the tar header if it's small enough.
 // If it's larger than four entries, then one or more extension headers are used
@@ -515,6 +523,7 @@ func (tr *Reader) readOldGNUSparseMap(hdr *Header, blk *block) (sparseDatas, err
 		return nil, ErrHeader
 	}
 	hdr.Format.mayOnlyBe(FormatGNU)
+
 	var p parser
 	hdr.Size = p.parseNumeric(blk.GNU().RealSize())
 	if p.err != nil {
@@ -555,7 +564,7 @@ func (tr *Reader) readOldGNUSparseMap(hdr *Header, blk *block) (sparseDatas, err
 // version 1.0. The format of the sparse map consists of a series of
 // newline-terminated numeric fields. The first field is the number of entries
 // and is always present. Following this are the entries, consisting of two
-// fields (offset, numBytes). This function must stop reading at the end
+// fields (offset, length). This function must stop reading at the end
 // boundary of the block containing the last newline.
 //
 // Note that the GNU manual says that numeric values should be encoded in octal
@@ -570,10 +579,9 @@ func readGNUSparseMap1x0(r io.Reader) (sparseDatas, error) {
 
 	// feedTokens copies data in blocks from r into buf until there are
 	// at least cnt newlines in buf. It will not read more blocks than needed.
-
 	feedTokens := func(n int64) error {
 		for cntNewline < n {
-			if _, err := mustReadFull(r, blk[:]); err != nil {			
+			if _, err := mustReadFull(r, blk[:]); err != nil {
 				return err
 			}
 			buf.Write(blk[:])
@@ -657,10 +665,17 @@ func readGNUSparseMap0x1(paxHdrs map[string]string) (sparseDatas, error) {
 	return spd, nil
 }
 
-// Calling Read on special types like TypeLink, TypeSymLink, TypeChar,
-// TypeBlock, TypeDir, and TypeFifo returns 0, io.EOF regardless of what
+// Read reads from the current file in the tar archive.
+// It returns (0, io.EOF) when it reaches the end of that file,
+// until Next is called to advance to the next file.
+//
+// If the current file is sparse, then the regions marked as a hole
+// are read back as NUL-bytes.
+//
+// Calling Read on special types like TypeLink, TypeSymlink, TypeChar,
+// TypeBlock, TypeDir, and TypeFifo returns (0, io.EOF) regardless of what
 // the Header.Size claims.
-func (rfr *regFileReader) Read(b []byte) (n int, err error) {
+func (tr *Reader) Read(b []byte) (int, error) {
 	if tr.err != nil {
 		return 0, tr.err
 	}
@@ -759,6 +774,7 @@ func (sr *sparseFileReader) Read(b []byte) (n int, err error) {
 			sr.sp = sr.sp[1:] // Ensure last fragment always remains
 		}
 	}
+
 	n = len(b0) - len(b)
 	switch {
 	case err == io.EOF:
